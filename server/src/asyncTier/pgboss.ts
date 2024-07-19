@@ -1,4 +1,3 @@
-import fs from 'fs';
 import PgBoss from 'pg-boss';
 import env from 'server/src/config/Env.ts';
 import { anonymousLogger } from 'server/src/logging/Logger.ts';
@@ -19,13 +18,6 @@ export async function initBoss() {
 
   const logger = anonymousLogger();
   const schema = `pgboss_${env.CORD_TIER}`;
-  let ssl: any = false;
-  if (env.CORD_TIER === 'prod' || env.CORD_TIER === 'staging') {
-    ssl = {
-      ca: fs.readFileSync('/etc/ssl/certs/ca-certificates.crt').toString(),
-      rejectUnauthorized: false,
-    };
-  }
 
   const newBoss = new PgBoss({
     host: env.POSTGRES_HOST,
@@ -34,7 +26,10 @@ export async function initBoss() {
     user: env.POSTGRES_USER,
     password: env.POSTGRES_PASSWORD,
     schema,
-    ssl: ssl,
+    ssl: {
+      require: true,
+      rejectUnauthorized: false,
+    },
   });
   newBoss.on('error', logger.exceptionLogger('pgboss error'));
   await newBoss.start();
