@@ -25,8 +25,12 @@ import { opsNotificationTopic } from 'ops/aws/src/radical-stack/sns/topics.ts';
 import { privateSubnets } from 'ops/aws/src/radical-stack/ec2/privateSubnets.ts';
 import { basicAgentConfig } from 'ops/aws/config/cloudwatch-agent/config.ts';
 import { AWS_ACCOUNT } from 'ops/aws/src/Config.ts';
+import { ec2KeyPair } from 'ops/aws/src/radical-stack/ec2/keyPair.ts';
 
 export const hostname = 'build3';
+// Whether to install the services on the machine that allow it to operate as a
+// runner for GitHub actions, local tests, etc.
+export const INCLUDE_GITHUB_RUNNER = false;
 
 const availabilityZone = `${AWS_REGION}b`;
 const packages: string[] = [
@@ -77,6 +81,16 @@ export const build3Instance = define(() => {
     'mkdir -p /opt/aws/bin',
     'pip3 install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz',
     'ln -s /usr/local/bin/cfn-* /opt/aws/bin',
+
+    // Add NodeSource repo so we get Node 18.x, which is what we use in
+    // production, instead of whatever Ubuntu's default is at this time.
+    // https://github.com/nodesource/distributions#installation-instructions
+    'apt-get install --no-install-recommends -y ca-certificates curl gnupg',
+    'mkdir -p /etc/apt/keyrings',
+    'curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg',
+    'echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_18.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list',
+    'apt-get update',
+    'apt-get install -y nodejs',
   );
 
   const instance = new EC2.Instance(
@@ -106,7 +120,7 @@ export const build3Instance = define(() => {
       ],
       securityGroup: build3SecurityGroup(),
       vpcSubnets: { subnets: privateSubnets() },
-      keyName: 'radical-ec2-key',
+      keyName: ec2KeyPair().keyName,
       userData,
       userDataCausesReplacement: false,
     },
@@ -169,7 +183,7 @@ export const build3Instance = define(() => {
         'dockerCredHelper',
         'dockerPruneCronJob',
         'testDatabase',
-        'githubActionsRunner',
+        ...(INCLUDE_GITHUB_RUNNER ? ['githubActionsRunner'] : []),
       ],
     },
     configs: {
@@ -231,44 +245,48 @@ export const build3Instance = define(() => {
           },
         ),
       ]),
-      githubActionsRunner: new EC2.InitConfig([
-        EC2.InitFile.fromAsset(
-          `/etc/docker/compose/github-actions-runner/docker-compose.yml`,
-          `config/build3/github-actions-runner/docker-compose.yml`,
-        ),
-        EC2.InitFile.fromString(
-          '/lib/systemd/system/github-actions-runner.service',
-          [
-            '[Unit]\n',
-            'Description=GitHub Actions Runner\n',
-            'Requires=docker.service\n\n',
-            'After=docker.service\n',
-            '[Service]\n',
-            'Type=oneshot\n',
-            'RemainAfterExit=true\n',
-            'TimeoutStartSec=5m\n',
-            'WorkingDirectory=/etc/docker/compose/github-actions-runner\n',
-            'ExecStart=/usr/bin/docker-compose up -d --remove-orphans --scale runner=6\n',
-            'ExecStop=/usr/bin/docker-compose down\n',
-            'Restart=on-failure\n',
-            'RestartSec=5\n',
-            '[Install]\n',
-            'WantedBy=multi-user.target',
-          ].join(''),
-        ),
-        EC2.InitFile.fromString(
-          '/etc/cron.d/restart-github-actions-runner',
-          '# Restart every morning at 7am UTC\n' +
-            '0 7 * * * root ' +
-            `docker pull ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/github-actions-runner:latest && ` +
-            'systemctl restart github-actions-runner\n',
-        ),
-        EC2.InitCommand.shellCommand(
-          'systemctl daemon-reload && ' +
-            'systemctl enable github-actions-runner && ' +
-            'systemctl restart github-actions-runner',
-        ),
-      ]),
+      ...(INCLUDE_GITHUB_RUNNER
+        ? {
+            githubActionsRunner: new EC2.InitConfig([
+              EC2.InitFile.fromAsset(
+                `/etc/docker/compose/github-actions-runner/docker-compose.yml`,
+                `config/build3/github-actions-runner/docker-compose.yml`,
+              ),
+              EC2.InitFile.fromString(
+                '/lib/systemd/system/github-actions-runner.service',
+                [
+                  '[Unit]\n',
+                  'Description=GitHub Actions Runner\n',
+                  'Requires=docker.service\n\n',
+                  'After=docker.service\n',
+                  '[Service]\n',
+                  'Type=oneshot\n',
+                  'RemainAfterExit=true\n',
+                  'TimeoutStartSec=5m\n',
+                  'WorkingDirectory=/etc/docker/compose/github-actions-runner\n',
+                  'ExecStart=/usr/bin/docker-compose up -d --remove-orphans --scale runner=6\n',
+                  'ExecStop=/usr/bin/docker-compose down\n',
+                  'Restart=on-failure\n',
+                  'RestartSec=5\n',
+                  '[Install]\n',
+                  'WantedBy=multi-user.target',
+                ].join(''),
+              ),
+              EC2.InitFile.fromString(
+                '/etc/cron.d/restart-github-actions-runner',
+                '# Restart every morning at 7am UTC\n' +
+                  '0 7 * * * root ' +
+                  `docker pull ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/github-actions-runner:latest && ` +
+                  'systemctl restart github-actions-runner\n',
+              ),
+              EC2.InitCommand.shellCommand(
+                'systemctl daemon-reload && ' +
+                  'systemctl enable github-actions-runner && ' +
+                  'systemctl restart github-actions-runner',
+              ),
+            ]),
+          }
+        : {}),
       testDatabase: new EC2.InitConfig([
         EC2.InitFile.fromAsset(
           `/etc/docker/compose/test-db/docker-compose.yml`,

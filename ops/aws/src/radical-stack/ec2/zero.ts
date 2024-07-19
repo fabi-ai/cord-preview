@@ -33,6 +33,7 @@ import {
   enableEc2InstanceConnect,
   waitForInstanceInit,
 } from 'ops/aws/src/radical-stack/ec2/common.ts';
+import { ec2KeyPair } from 'ops/aws/src/radical-stack/ec2/keyPair.ts';
 
 // SSH normally listens on port 22. Because of that, there are lots of random
 // connection attempts made on port 22 on probably all machines on the internet.
@@ -42,6 +43,11 @@ import {
 // on the following port:
 const EXPOSE_SSH_PORT = 28547; // Prime time!
 const hostname = 'zero';
+// Normally zero gets a new host key every time it gets replaced, which means
+// ssh will complain that the identity has changed.  If you change this to true,
+// it will attempt to extract keys from a secret and install those so the
+// identity doesn't change.
+const STABLE_HOST_KEYS = false;
 
 const availabilityZone = `${AWS_REGION}a`;
 const packages: string[] = [
@@ -159,7 +165,7 @@ export const zeroInstance = define(() => {
       vpcSubnets: {
         subnetType: EC2.SubnetType.PUBLIC,
       },
-      keyName: 'radical-ec2-key',
+      keyName: ec2KeyPair().keyName,
       userData,
       userDataCausesReplacement: false,
       requireImdsv2: true,
@@ -171,23 +177,26 @@ export const zeroInstance = define(() => {
     { nonProd: true },
   );
 
-  const sshHostKeysSecret = new SecretsManager.Secret(
-    radicalStack(),
-    'zero-ssh-host-keys-secret',
-    {
-      description: 'SSH Host keys for zero',
-      secretName: 'zero-ssh-host-keys',
-      removalPolicy: RemovalPolicy.RETAIN,
-    },
-  );
-  sshHostKeysSecret.grantRead(instance);
+  let sshHostKeysSecret: SecretsManager.Secret | undefined;
+  if (STABLE_HOST_KEYS) {
+    sshHostKeysSecret = new SecretsManager.Secret(
+      radicalStack(),
+      'zero-ssh-host-keys-secret',
+      {
+        description: 'SSH Host keys for zero',
+        secretName: 'zero-ssh-host-keys',
+        removalPolicy: RemovalPolicy.RETAIN,
+      },
+    );
+    sshHostKeysSecret.grantRead(instance);
+  }
 
   EC2.CloudFormationInit.fromConfigSets({
     configSets: {
       Init: [
         'installCfnHup',
         'configureSSH',
-        'installSSHHostKeys',
+        ...(STABLE_HOST_KEYS ? ['installSSHHostKeys'] : []),
         'configureApt',
         'installPackages',
         'installEc2InstanceConnect',
@@ -198,7 +207,9 @@ export const zeroInstance = define(() => {
     configs: {
       installCfnHup: installCfnHupConfigOnUbuntu(instance, 'Init'),
       configureSSH: configureSSH(EXPOSE_SSH_PORT),
-      installSSHHostKeys: installSSHHostKeys(sshHostKeysSecret),
+      ...(STABLE_HOST_KEYS && sshHostKeysSecret
+        ? { installSSHHostKeys: installSSHHostKeys(sshHostKeysSecret) }
+        : {}),
       configureApt: new EC2.InitConfig([
         EC2.InitFile.fromString(
           '/etc/apt/apt.conf.d/90norecommends',
@@ -230,6 +241,16 @@ export const zeroInstance = define(() => {
         packages.map((pkg) => EC2.InitPackage.apt(pkg)),
       ),
       installEc2InstanceConnect: new EC2.InitConfig([
+        // Old versions of pyOpenSSL aren't compatible with newer versions of
+        // `cryptography` which are installed by `ec2instanceconnectcli`, so
+        // ensure a new pyOpenSSL is available before installing
+        // ec2instanceconnectcli
+        EC2.InitCommand.argvCommand([
+          'pip3',
+          'install',
+          '--upgrade',
+          'pyOpenSSL',
+        ]),
         EC2.InitCommand.argvCommand([
           'pip3',
           'install',
