@@ -25,6 +25,9 @@ export async function initBoss() {
     user: env.POSTGRES_USER,
     password: env.POSTGRES_PASSWORD,
     schema,
+    ssl: {
+      rejectUnauthorized: false,
+    },
   });
   newBoss.on('error', logger.exceptionLogger('pgboss error'));
   await newBoss.start();
