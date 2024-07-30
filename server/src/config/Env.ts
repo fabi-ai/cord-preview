@@ -83,6 +83,7 @@ export default magicEnv(process.env, {
   S3_USE_PATH_BASED_URLS: required,
 
   EMAIL_LINKS_TOKEN_SECRET: required,
+  EMAIL_DELAY_SECONDS: defaultValue('40'),
 
   // Jira App credentials - required
   JIRA_APP_CLIENT_ID: required,
