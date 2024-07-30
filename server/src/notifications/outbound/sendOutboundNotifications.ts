@@ -232,7 +232,7 @@ export async function sendOutboundNotification(
         setTimeoutAsync(() => sendEmailNotification(emailData), 40 * 1000);
       } else {
         await submitAsync('sendEmailNotificationWithDelay', emailData, {
-          startAfter: 40,
+          startAfter: Number(process.env.EMAIL_DELAY_SECONDS),
         });
       }
     }
